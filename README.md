@@ -31,7 +31,7 @@ Attackers can execute SSL/TLS attacks more quickly and easily due to the reduced
 
 MIT License
 
-Copyright (c) [YEAR] [YOUR NAME OR ORGANIZATION]
+Copyright (c) 2025 Minkyukim
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
